@@ -44,3 +44,5 @@ var/
 .vscode/
 env/
 venv/
+
+*.session
