@@ -1,4 +1,3 @@
-```markdown
 # Telegram Invite App
 
 This project is an application that interacts with users via the Telegram bot and sends invitation messages to specific users based on username matches. It operates through the Telegram API.
