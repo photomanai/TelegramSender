@@ -1,51 +1,41 @@
-from flask import Flask, jsonify
 from telethon import TelegramClient
 from dotenv import load_dotenv
 import os
-import asyncio
-from flask_cors import CORS  # CORS başlıklarını eklemek için
 
-# .env dosyasını yükle
+# .env dosyasını yükleyin
 load_dotenv()
 
-# API ID ve API Hash'i .env dosyasından al
+# API ID ve API Hash'i .env dosyasından alın
 api_id = os.getenv("API_ID")
 api_hash = os.getenv("API_HASH")
 
-# Telethon ile Telegram client'ını başlat
 client = TelegramClient("invite_app_session", api_id, api_hash)
 
-# Flask uygulamasını başlat
-app = Flask(__name__)
-CORS(app)  # CORS başlıklarını etkinleştir
-
-
-# Telegram mesajlarını gönderecek asenkron fonksiyon
 async def send_invites():
-    await client.start()  # Client'ı başlat
+    await client.start()
     print("Client giriş yaptı!")
 
-    selected_names = ["Fulii", "10c¹ Zahid", "Roofmom/2"]  # Gönderilecek adlar
-    dialogs = await client.get_dialogs()  # Dialogları al
+    selected_names = ["Fulii", "10c¹ Zahid", "Roofmom/2"]  # Mesaj göndəriləcək adlar
+
+    dialogs = await client.get_dialogs()  # Kullanıcının tüm dialoglarını alır
+    print(f"{len(dialogs)} diyalog bulundu.")
+
     for dialog in dialogs:
+        # Dialog'un adını yazdırarak kontrol edelim
+        print(f"Dialog Adı: {dialog.name}, Kullanıcı Adı: {getattr(dialog, 'username', 'Yok')}")
+
+        # Seçilen isimleri kontrol et
         for name in selected_names:
             if name.lower() in dialog.name.lower():  # İsim eşleşmesi
                 try:
                     message = f"Salam {dialog.name}! Yeni dəvət tətbiqimə baxmağı tövsiyə edirəm."
-                    await client.send_message(dialog.id, message)  # Mesaj gönder
-                    print(f"{dialog.name} adlı kullanıcıya mesaj gönderildi.")
-                    break  # Mesaj gönderildikten sonra diğer isimlere bakma
+                    await client.send_message(dialog.id, message)  # Mesaj gönderir
+                    print(f"{dialog.name} adlı istifadəçiyə mesaj göndərildi.")
+                    break  # Mesaj gönderildikten sonra diğer isimlere bakmayı durdur
                 except Exception as e:
-                    print(f"{dialog.name} için hata oluştu: {e}")
+                    print(f"{dialog.name} üçün səhv baş verdi: {e}")
+            else:
+                print(f"{dialog.name} bu listede değil, mesaj gönderilmedi.")
 
-
-# API endpoint'i
-@app.route("/send-invites", methods=["GET"])
-async def send_invites_route():  # async def ile fonksiyonu asenkron hale getirin
-    await send_invites()  # Asenkron fonksiyonu çağırın
-    return jsonify({"status": "success", "message": "Invites sent!"})
-
-
-# Flask uygulamasını başlat
-if __name__ == "__main__":
-    app.run(port=5000)
+with client:
+    client.loop.run_until_complete(send_invites())
