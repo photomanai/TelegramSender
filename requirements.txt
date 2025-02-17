@@ -1,4 +1,4 @@
 Flask==2.2.3
-Flask-CORS==3.1.1
-telethon==1.26.2
-python-dotenv==1.0.0
+Flask-CORS==2.1.0
+telethon==1.23.0
+python-dotenv==0.19.2
