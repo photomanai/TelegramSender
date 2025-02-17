@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 import os
 import logging
 from flask_cors import CORS
+from werkzeug.urls import unquote
+
 
 # Loglama ayarı
 logging.basicConfig(level=logging.INFO)
