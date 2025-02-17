@@ -30,6 +30,11 @@ def get_client(phone_number):
     return TelegramClient(session_path, api_id, api_hash)
 
 
+@app.route("/")
+def hello_world():
+    return "Hello, World!"
+
+
 @app.route("/send-code", methods=["POST"])
 async def send_code():
     try:
