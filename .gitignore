@@ -48,4 +48,4 @@ venv/
 *.session
 *.rest
 
-session/
+sessions/
