@@ -1,39 +1,39 @@
-# api/index.py
 from flask import Flask, request, jsonify
 from telethon import TelegramClient, errors
-from telethon.sessions import StringSession
-from pymongo import MongoClient
+from telethon.tl.types import InputPeerUser, InputPeerChannel
 from dotenv import load_dotenv
 import os
 import logging
+from flask_cors import CORS
 
-# MongoDB bağlantısı
-load_dotenv()
-mongo_client = MongoClient(os.getenv("MONGO_URI"))
-db = mongo_client.telegram_sessions
-sessions_collection = db.sessions
 
-app = Flask(__name__)
+# Loglama ayarı
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Telethon ayarları
-api_id = int(os.getenv("API_ID"))
+load_dotenv()
+
+api_id = os.getenv("API_ID")
 api_hash = os.getenv("API_HASH")
+
+app = Flask(__name__)
+CORS(app)
+
+# Session dosyaları için mutlak yol
+SESSION_DIR = os.path.join(os.getcwd(), "sessions")
+os.makedirs(SESSION_DIR, exist_ok=True)
 
 
 def get_client(phone_number):
-    """MongoDB'den session'ı al veya yeni oluştur"""
-    record = sessions_collection.find_one({"phone": phone_number})
+    """TelegramClient oluştururken telefon numarasını normalize edelim"""
+    clean_phone = phone_number.strip().replace(" ", "").replace("-", "")
+    session_path = os.path.join(SESSION_DIR, f"{clean_phone}.session")
+    return TelegramClient(session_path, api_id, api_hash)
 
-    if record:
-        return TelegramClient(StringSession(record["session"]), api_id, api_hash)
-    else:
-        new_session = StringSession()
-        sessions_collection.insert_one(
-            {"phone": phone_number, "session": new_session.save(), "active": False}
-        )
-        return TelegramClient(new_session, api_id, api_hash)
+
+@app.route("/")
+def hello_world():
+    return "Hello, World!"
 
 
 @app.route("/send-code", methods=["POST"])
@@ -41,20 +41,22 @@ async def send_code():
     try:
         data = request.json
         phone_number = data.get("phone_number")
+        if not phone_number:
+            return (
+                jsonify({"status": "error", "message": "Phone number required"}),
+                400,
+            )
 
         client = get_client(phone_number)
-        async with client:
-            if await client.is_user_authorized():
-                return jsonify({"status": "already_authorized"})
+        await client.connect()
 
-            sent_code = await client.send_code_request(phone_number)
-            sessions_collection.update_one(
-                {"phone": phone_number},
-                {"$set": {"phone_code_hash": sent_code.phone_code_hash}},
-            )
-            return jsonify(
-                {"status": "code_sent", "phone_code_hash": sent_code.phone_code_hash}
-            )
+        if await client.is_user_authorized():
+            return jsonify({"status": "success", "message": "Already logged in"})
+
+        sent_code = await client.send_code_request(phone_number)
+        return jsonify(
+            {"status": "success", "phone_code_hash": sent_code.phone_code_hash}
+        )
 
     except Exception as e:
         logger.error(f"Send code error: {str(e)}")
@@ -67,30 +69,33 @@ async def verify_code():
         data = request.json
         phone_number = data.get("phone_number")
         code = data.get("code").strip()
-        password_2fa = data.get("password_2fa")
+        phone_code_hash = data.get("phone_code_hash")
+        password_2fa = data.get("password_2fa")  # 2FA şifresi için
 
-        record = sessions_collection.find_one({"phone": phone_number})
-        if not record or "phone_code_hash" not in record:
-            return jsonify({"status": "error", "message": "Session not found"}), 404
+        if not all([phone_number, code, phone_code_hash]):
+            return (
+                jsonify({"status": "error", "message": "Incomplete information"}),
+                400,
+            )
 
         client = get_client(phone_number)
-        async with client:
-            try:
-                await client.sign_in(
-                    phone_number, code=code, phone_code_hash=record["phone_code_hash"]
-                )
-            except errors.SessionPasswordNeededError:
-                if not password_2fa:
-                    return jsonify({"status": "2fa_required"}), 402
-                await client.sign_in(password=password_2fa)
+        await client.connect()
 
-            # Güncellenmiş session'ı kaydet
-            session_string = client.session.save()
-            sessions_collection.update_one(
-                {"phone": phone_number},
-                {"$set": {"session": session_string, "active": True}},
+        try:
+            await client.sign_in(
+                phone_number, code=code, phone_code_hash=phone_code_hash
             )
-            return jsonify({"status": "authorized"})
+        except errors.SessionPasswordNeededError:
+            if not password_2fa:
+                return (
+                    jsonify({"status": "error", "message": "2FA şifresi gerekli"}),
+                    402,
+                )
+            await client.sign_in(password=password_2fa)
+
+        # Session'ı manuel kaydetme
+        client.session.save()
+        return jsonify({"status": "success", "message": "Login successful"})
 
     except Exception as e:
         logger.error(f"Verify error: {str(e)}")
@@ -102,26 +107,48 @@ async def send_invites():
     try:
         data = request.json
         phone_number = data.get("phone_number")
-        message = data.get("message", "Default invitation message")
+        base_message = data.get("message", "You are invited to the event.")
         recipients = data.get("recipients", [])
+
+        if not phone_number:
+            return jsonify({"status": "error", "message": "Phone number required"}), 400
 
         client = get_client(phone_number)
         async with client:
             if not await client.is_user_authorized():
-                return jsonify({"status": "unauthorized"}), 401
+                return jsonify({"status": "error", "message": "Unauthorized"}), 401
 
             results = {"success": [], "errors": []}
+
             for recipient in recipients:
                 try:
-                    entity = await client.get_entity(recipient["send"])
-                    await client.send_message(
-                        entity, f"{recipient['display_name']}, {message}"
-                    )
-                    results["success"].append(recipient["send"])
+                    # Recipient objesinin validasyonu
+                    if "send" not in recipient or "display_name" not in recipient:
+                        raise ValueError(
+                            "Recipient formatı hatalı. 'send' ve 'display_name' alanları zorunlu."
+                        )
+
+                    send_to = recipient["send"]  # Kullanıcı adı veya telefon numarası
+                    display_name = recipient["display_name"]  # Mesajda görünecek isim
+
+                    # Kullanıcıyı bul (username veya telefon numarası ile)
+                    entity = await client.get_entity(send_to)
+
+                    # Mesajı kişiselleştir (Örnek: "Zahid, You are invited to the event.")
+                    personalized_message = f"{display_name}, {base_message}"
+
+                    await client.send_message(entity, personalized_message)
+                    results["success"].append(send_to)
+                    logger.info(f"Sent to {send_to}")
+
+                except (ValueError, errors.FloodWaitError) as e:
+                    error_msg = str(e)
+                    results["errors"].append({send_to: error_msg})
+                    logger.error(f"Error sending to {send_to}: {error_msg}")
                 except Exception as e:
-                    results["errors"].append(
-                        {"recipient": recipient["send"], "error": str(e)}
-                    )
+                    error_msg = "Unexpected error"
+                    results["errors"].append({send_to: error_msg})
+                    logger.error(f"Unexpected error for {send_to}: {str(e)}")
 
             return jsonify({"status": "success", "results": results})
 
@@ -131,4 +158,4 @@ async def send_invites():
 
 
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=5000, debug=False)
