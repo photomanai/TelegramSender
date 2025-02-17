@@ -46,3 +46,6 @@ env/
 venv/
 
 *.session
+*.rest
+
+sessions/
