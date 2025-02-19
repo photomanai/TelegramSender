@@ -1,5 +1,4 @@
-flask
+Flask
+Flask-Cors
 python-dotenv
 telethon
-pymongo
-motor
