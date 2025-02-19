@@ -3,4 +3,5 @@ telethon
 python-dotenv
 Flask-CORS
 gunicorn
+Flask[async]
 
