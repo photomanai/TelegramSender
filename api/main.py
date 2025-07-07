@@ -36,6 +36,34 @@ def hello_world():
     return "Hello, World!"
 
 
+@app.route("/check-session", methods=["POST"])
+async def check_session():
+    """Session durumunu kontrol et"""
+    try:
+        data = request.json
+        phone_number = data.get("phone_number")
+        if not phone_number:
+            return jsonify({"status": "error", "message": "Phone number required"}), 400
+
+        client = get_client(phone_number)
+        await client.connect()
+
+        is_authorized = await client.is_user_authorized()
+        await client.disconnect()
+
+        return jsonify(
+            {
+                "status": "success",
+                "is_authorized": is_authorized,
+                "message": "Already logged in" if is_authorized else "Login required",
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Check session error: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route("/send-code", methods=["POST"])
 async def send_code():
     try:
@@ -50,12 +78,25 @@ async def send_code():
         client = get_client(phone_number)
         await client.connect()
 
+        # Önce session kontrol et
         if await client.is_user_authorized():
-            return jsonify({"status": "success", "message": "Already logged in"})
+            await client.disconnect()
+            return jsonify(
+                {
+                    "status": "success",
+                    "message": "Already logged in",
+                    "already_authorized": True,
+                }
+            )
 
         sent_code = await client.send_code_request(phone_number)
+        await client.disconnect()
         return jsonify(
-            {"status": "success", "phone_code_hash": sent_code.phone_code_hash}
+            {
+                "status": "success",
+                "phone_code_hash": sent_code.phone_code_hash,
+                "already_authorized": False,
+            }
         )
 
     except Exception as e:
@@ -87,6 +128,7 @@ async def verify_code():
             )
         except errors.SessionPasswordNeededError:
             if not password_2fa:
+                await client.disconnect()
                 return (
                     jsonify({"status": "error", "message": "2FA şifresi gerekli"}),
                     402,
@@ -95,6 +137,7 @@ async def verify_code():
 
         # Session'ı manuel kaydetme
         client.session.save()
+        await client.disconnect()
         return jsonify({"status": "success", "message": "Login successful"})
 
     except Exception as e:
@@ -114,43 +157,52 @@ async def send_invites():
             return jsonify({"status": "error", "message": "Phone number required"}), 400
 
         client = get_client(phone_number)
-        async with client:
-            if not await client.is_user_authorized():
-                return jsonify({"status": "error", "message": "Unauthorized"}), 401
+        await client.connect()
 
-            results = {"success": [], "errors": []}
+        # Session kontrolü
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            return (
+                jsonify(
+                    {"status": "error", "message": "Unauthorized - Please login first"}
+                ),
+                401,
+            )
 
-            for recipient in recipients:
-                try:
-                    # Recipient objesinin validasyonu
-                    if "send" not in recipient or "display_name" not in recipient:
-                        raise ValueError(
-                            "Recipient formatı hatalı. 'send' ve 'display_name' alanları zorunlu."
-                        )
+        results = {"success": [], "errors": []}
 
-                    send_to = recipient["send"]  # Kullanıcı adı veya telefon numarası
-                    display_name = recipient["display_name"]  # Mesajda görünecek isim
+        for recipient in recipients:
+            try:
+                # Recipient objesinin validasyonu
+                if "send" not in recipient or "display_name" not in recipient:
+                    raise ValueError(
+                        "Recipient formatı hatalı. 'send' ve 'display_name' alanları zorunlu."
+                    )
 
-                    # Kullanıcıyı bul (username veya telefon numarası ile)
-                    entity = await client.get_entity(send_to)
+                send_to = recipient["send"]  # Kullanıcı adı veya telefon numarası
+                display_name = recipient["display_name"]  # Mesajda görünecek isim
 
-                    # Mesajı kişiselleştir (Örnek: "Zahid, You are invited to the event.")
-                    personalized_message = f"{display_name}, {base_message}"
+                # Kullanıcıyı bul (username veya telefon numarası ile)
+                entity = await client.get_entity(send_to)
 
-                    await client.send_message(entity, personalized_message)
-                    results["success"].append(send_to)
-                    logger.info(f"Sent to {send_to}")
+                # Mesajı kişiselleştir (Örnek: "Zahid, You are invited to the event.")
+                personalized_message = f"{display_name}, {base_message}"
 
-                except (ValueError, errors.FloodWaitError) as e:
-                    error_msg = str(e)
-                    results["errors"].append({send_to: error_msg})
-                    logger.error(f"Error sending to {send_to}: {error_msg}")
-                except Exception as e:
-                    error_msg = "Unexpected error"
-                    results["errors"].append({send_to: error_msg})
-                    logger.error(f"Unexpected error for {send_to}: {str(e)}")
+                await client.send_message(entity, personalized_message)
+                results["success"].append(send_to)
+                logger.info(f"Sent to {send_to}")
 
-            return jsonify({"status": "success", "results": results})
+            except (ValueError, errors.FloodWaitError) as e:
+                error_msg = str(e)
+                results["errors"].append({send_to: error_msg})
+                logger.error(f"Error sending to {send_to}: {error_msg}")
+            except Exception as e:
+                error_msg = "Unexpected error"
+                results["errors"].append({send_to: error_msg})
+                logger.error(f"Unexpected error for {send_to}: {str(e)}")
+
+        await client.disconnect()
+        return jsonify({"status": "success", "results": results})
 
     except Exception as e:
         logger.error(f"Send invites error: {str(e)}")
